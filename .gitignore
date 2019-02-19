@@ -1,0 +1,6 @@
+/target/
+/.settings/
+/.project
+/.classpath
+/platform-domain-generated/
+/platform-example-domain/
