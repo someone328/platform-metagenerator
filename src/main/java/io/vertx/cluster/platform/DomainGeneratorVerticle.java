@@ -1,48 +1,59 @@
 package io.vertx.cluster.platform;
 
-import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
+import io.reactivex.Flowable;
+import io.reactivex.Scheduler;
 import io.swagger.codegen.v3.cli.SwaggerCodegen;
 import io.vertx.cluster.platform.util.FileRcursiveEraiser;
 import io.vertx.cluster.platform.util.GitCloneWrapper;
-import io.vertx.core.AbstractVerticle;
+import io.vertx.reactivex.core.AbstractVerticle;
+import io.vertx.reactivex.core.RxHelper;
 
 public class DomainGeneratorVerticle extends AbstractVerticle {
 
     @Override
     public void start() {
         try {
-            String gitUrlFrom = Optional.of(config().getString("gitUrlFrom"))
-                                        .get();
-            String gitUrlTo = Optional.of(config().getString("gitUrlTo"))
-                                      .get();
+            String gitUrlFrom = config().getString("gitUrlFrom");
+            String gitUrlTo = config().getString("gitUrlTo");
             GitCloneWrapper.cloneUrl(gitUrlFrom);
             GitCloneWrapper.cloneUrl(gitUrlTo);
             String outputGitFolderName = GitCloneWrapper.calculateFolderNameFrom(gitUrlTo);
             generateDomain(GitCloneWrapper.calculateFolderNameFrom(gitUrlFrom),
                            outputGitFolderName);
-            vertx.setPeriodic(200,
-                              i -> vertx.fileSystem()
-                                        .exists(outputGitFolderName + "/.swagger-codegen/VERSION",
-                                                h -> {
-                                                    System.out.println("XXXXXXXXXXXXXXXXX "+ h);
-                                                    if(!h.result()) {
-                                                        return;
-                                                    }
-                                                    GitCloneWrapper.pushToUrl(gitUrlTo);
-                                                    vertx.setTimer(500,
-                                                                   handler -> vertx.undeploy(deploymentID()));
-                                                    vertx.cancelTimer(i);
-                                                }));
 
+            wait4GenerationEndAndStopVerticle(gitUrlTo,
+                                              outputGitFolderName);
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException(e);
         }
     }
 
+    private void wait4GenerationEndAndStopVerticle(String gitUrlTo, String outputGitFolderName) {
+        Scheduler scheduler = RxHelper.scheduler(vertx);
+        Flowable<Long> ticker = Flowable.interval(200,
+                                                  TimeUnit.MILLISECONDS,
+                                                  scheduler);
+        ticker.map(tickId -> vertx.fileSystem()
+                                  .rxExists(outputGitFolderName + "/.swagger-codegen/VERSION")
+                                  .toFlowable())
+              .flatMap(b -> b)
+              .takeUntil(Boolean::booleanValue)
+              .doOnComplete(() -> pushGeneratedAndStopCurrentVerticle(gitUrlTo))
+              .subscribe();
+    }
+
+    private void pushGeneratedAndStopCurrentVerticle(String gitUrlTo) {
+        GitCloneWrapper.pushToUrl(gitUrlTo);
+        vertx.setTimer(500,
+                       handler -> vertx.undeploy(deploymentID()));
+    }
+
     private void generateDomain(String gitFolder, String generatedDomainGitUrl) throws Exception {
-        FileRcursiveEraiser.deleteRecursive(generatedDomainGitUrl, true);
+        FileRcursiveEraiser.deleteRecursive(generatedDomainGitUrl,
+                                            true);
 
         String[] args2 = new String[12];
         args2[0] = "generate";
@@ -60,48 +71,6 @@ public class DomainGeneratorVerticle extends AbstractVerticle {
         SwaggerCodegen.main(args2);
 
     }
-
-    /*
-     * private void generateDomain(String gitFolder, String generatedDomainGitUrl)
-     * throws Exception { FileRcursiveEraiser.deleteRecursive(generatedDomainGitUrl
-     * +"/src");
-     * 
-     * JCodeModel codeModel = new JCodeModel(); GenerationConfig config =
-     * createConfig(); SchemaMapper mapper = new SchemaMapper(new
-     * VertxPlatformRuleFactory(config, new Jackson2Annotator(config), new
-     * SchemaStore()), new SchemaGenerator());
-     * 
-     * Files.find(Paths.get(gitFolder), 999, (path, attr) -> path.toString()
-     * .endsWith(".json")) .forEach(path -> generate(codeModel, mapper, path));
-     * 
-     * codeModel.build(Files.createDirectories(Paths.get(generatedDomainGitUrl
-     * +"/src")) .toFile());
-     * 
-     * }
-     * 
-     * private GenerationConfig createConfig() { GenerationConfig config = new
-     * DefaultGenerationConfig() {
-     * 
-     * @Override public boolean isGenerateBuilders() { return true; }
-     * 
-     * @Override public boolean isIncludeJsr303Annotations() { return true; }
-     * 
-     * @Override public boolean isUseTitleAsClassname() { return true; }
-     * 
-     * @Override public boolean isIncludeAdditionalProperties() { return false; }
-     * 
-     * @Override public String getDateTimeType() { return "java.time.LocalDateTime";
-     * }
-     * 
-     * @Override public String getDateType() { return "java.time.LocalDate"; }
-     * 
-     * }; return config; }
-     * 
-     * private void generate(JCodeModel codeModel, SchemaMapper mapper, Path path) {
-     * try { mapper.generate(codeModel, "ClassName",
-     * "io.vertx.cluster.platform.domain", path.toUri() .toURL()); } catch
-     * (MalformedURLException e) { throw new RuntimeException(e); } }
-     */
 
     @Override
     public void stop() throws Exception {
